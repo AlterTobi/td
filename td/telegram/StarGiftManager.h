@@ -105,6 +105,7 @@ class StarGiftManager final : public Actor {
   void drop_gift_original_details(StarGiftId star_gift_id, int64 star_count, Promise<Unit> &&promise);
 
   void send_resold_gift(const string &gift_name, DialogId receiver_dialog_id, StarGiftResalePrice price,
+                        td_api::object_ptr<td_api::formattedText> text, bool is_private,
                         Promise<td_api::object_ptr<td_api::GiftResaleResult>> &&promise);
 
   void send_gift_offer(DialogId owner_dialog_id, const string &gift_name, StarGiftResalePrice price, int32 duration,
@@ -134,6 +135,7 @@ class StarGiftManager final : public Actor {
   void set_star_gift_price(StarGiftId star_gift_id, StarGiftResalePrice price, Promise<Unit> &&promise);
 
   void get_resale_star_gifts(int64 gift_id, const td_api::object_ptr<td_api::GiftForResaleOrder> &order, bool for_craft,
+                             bool for_stars,
                              const vector<td_api::object_ptr<td_api::UpgradedGiftAttributeId>> &attributes,
                              const string &offset, int32 limit,
                              Promise<td_api::object_ptr<td_api::giftsForResale>> &&promise);

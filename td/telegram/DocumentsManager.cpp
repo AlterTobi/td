@@ -58,6 +58,22 @@ DocumentsManager::~DocumentsManager() {
   Scheduler::instance()->destroy_on_scheduler(G()->get_gc_scheduler_id(), documents_);
 }
 
+vector<telegram_api::object_ptr<telegram_api::DocumentAttribute>> DocumentsManager::extract_web_document_attributes(
+    telegram_api::WebDocument *web_document) {
+  if (web_document == nullptr) {
+    return {};
+  }
+  switch (web_document->get_id()) {
+    case telegram_api::webDocument::ID:
+      return std::move(static_cast<telegram_api::webDocument *>(web_document)->attributes_);
+    case telegram_api::webDocumentNoProxy::ID:
+      return std::move(static_cast<telegram_api::webDocumentNoProxy *>(web_document)->attributes_);
+    default:
+      UNREACHABLE();
+      return {};
+  }
+}
+
 tl_object_ptr<td_api::document> DocumentsManager::get_document_object(FileId file_id,
                                                                       PhotoFormat thumbnail_format) const {
   if (!file_id.is_valid()) {
@@ -94,7 +110,8 @@ td_api::object_ptr<td_api::videoStoryboard> DocumentsManager::get_video_storyboa
 }
 
 Document DocumentsManager::on_get_document(RemoteDocument remote_document, DialogId owner_dialog_id,
-                                           bool is_self_destructing, MultiPromiseActor *load_data_multipromise_ptr,
+                                           bool is_self_destructing, bool is_live_photo,
+                                           MultiPromiseActor *load_data_multipromise_ptr,
                                            Document::Type default_document_type, Subtype document_subtype) {
   telegram_api::object_ptr<telegram_api::documentAttributeAnimated> animated;
   telegram_api::object_ptr<telegram_api::documentAttributeVideo> video;
@@ -266,7 +283,11 @@ Document DocumentsManager::on_get_document(RemoteDocument remote_document, Dialo
         file_name.clear();
       } else {
         document_type = Document::Type::Video;
-        file_type = is_self_destructing ? FileType::SelfDestructingVideo : FileType::Video;
+        if (is_live_photo) {
+          file_type = is_self_destructing ? FileType::SelfDestructingLivePhoto : FileType::LivePhoto;
+        } else {
+          file_type = is_self_destructing ? FileType::SelfDestructingVideo : FileType::Video;
+        }
       }
       default_extension = Slice("mp4");
     }

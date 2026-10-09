@@ -26,6 +26,7 @@
 #include "td/utils/common.h"
 #include "td/utils/logging.h"
 #include "td/utils/misc.h"
+#include "td/utils/port/config.h"
 #include "td/utils/port/sleep.h"
 #include "td/utils/Slice.h"
 #include "td/utils/SliceBuilder.h"
@@ -388,14 +389,27 @@ NetQueryDispatcher::NetQueryDispatcher(const std::function<ActorShared<>()> &cre
 NetQueryDispatcher::~NetQueryDispatcher() = default;
 
 void NetQueryDispatcher::try_fix_migrate(NetQueryPtr &net_query) {
+  if (net_query->dc_id().is_external()) {
+    return;
+  }
   auto error_message = net_query->error().message();
+  static constexpr CSlice file_migrate_prefix = "FILE_MIGRATE_";
+  if (begins_with(error_message, file_migrate_prefix)) {
+    auto new_dc_id = to_integer<int32>(error_message.substr(file_migrate_prefix.size()));
+    if (!DcId::is_valid(new_dc_id)) {
+      LOG(ERROR) << "Receive invalid DC ID in " << error_message;
+      return;
+    }
+    net_query->resend(DcId::internal(new_dc_id));
+    return;
+  }
   static constexpr CSlice prefixes[] = {"PHONE_MIGRATE_", "NETWORK_MIGRATE_", "USER_MIGRATE_"};
   for (auto &prefix : prefixes) {
     if (error_message.substr(0, prefix.size()) == prefix) {
       auto new_main_dc_id = to_integer<int32>(error_message.substr(prefix.size()));
       set_main_dc_id(new_main_dc_id);
 
-      if (!net_query->dc_id().is_main()) {
+      if (!net_query->dc_id().is_main() && DcId::is_valid(new_main_dc_id)) {
         LOG(ERROR) << "Receive " << error_message << " for query to non-main DC" << net_query->dc_id();
         net_query->resend(DcId::internal(new_main_dc_id));
       } else {

@@ -354,8 +354,6 @@ void BackgroundManager::Background::parse(ParserT &parser) {
   td::parse(name, parser);
   if (has_file_id) {
     file_id = parser.context()->td().get_actor_unsafe()->documents_manager_->parse_document(parser);
-  } else {
-    file_id = FileId();
   }
   td::parse(type, parser);
 }
@@ -995,6 +993,10 @@ void BackgroundManager::upload_background_file(FileId file_id, const BackgroundT
 
 void BackgroundManager::on_upload_background_file(FileUploadId file_upload_id,
                                                   telegram_api::object_ptr<telegram_api::InputFile> input_file) {
+  if (G()->close_flag()) {
+    return;
+  }
+
   LOG(INFO) << "Background " << file_upload_id << " has been uploaded";
 
   auto it = being_uploaded_files_.find(file_upload_id);
@@ -1012,7 +1014,6 @@ void BackgroundManager::on_upload_background_file(FileUploadId file_upload_id,
 
 void BackgroundManager::on_upload_background_file_error(FileUploadId file_upload_id, Status status) {
   if (G()->close_flag()) {
-    // do not fail upload if closing
     return;
   }
 
@@ -1328,7 +1329,7 @@ std::pair<BackgroundId, BackgroundType> BackgroundManager::on_get_background(
   bool is_pattern = wallpaper->pattern_;
 
   Document document = td_->documents_manager_->on_get_document(
-      telegram_api::move_object_as<telegram_api::document>(wallpaper->document_), DialogId(), false, nullptr,
+      telegram_api::move_object_as<telegram_api::document>(wallpaper->document_), DialogId(), false, false, nullptr,
       Document::Type::General, is_pattern ? DocumentsManager::Subtype::Pattern : DocumentsManager::Subtype::Background);
   if (!document.file_id.is_valid()) {
     LOG(ERROR) << "Receive wrong document in " << to_string(wallpaper);

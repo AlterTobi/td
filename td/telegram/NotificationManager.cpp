@@ -332,7 +332,8 @@ void NotificationManager::save_announcement_ids() {
     return;
   }
 
-  auto notification_announcement_ids_string = implode(transform(stored_ids, to_string<int32>));
+  auto notification_announcement_ids_string =
+      implode(transform(stored_ids, [](int32 stored_id) { return to_string(stored_id); }));
   G()->td_db()->get_binlog_pmc()->set("notification_announcement_ids", notification_announcement_ids_string);
 }
 
@@ -2851,6 +2852,10 @@ string NotificationManager::convert_loc_key(const string &loc_key) {
       {"MESSAGE_GIFT_THEME", "MESSAGE_CHAT_CHANGE_THEME"},
       {"MESSAGE_GIVEAWAY", "MESSAGE_GIVEAWAY"},
       {"MESSAGE_GIVEAWAY_STARS", "MESSAGE_GIVEAWAY_STARS"},
+      {"MESSAGE_GRAM_TRANSFER", "MESSAGE_GRAM_TRANSFER"},
+      {"MESSAGE_GRAM_TRANSFER_COMMENT", "MESSAGE_GRAM_TRANSFER"},
+      {"MESSAGE_GRAM_TRANSFER_UNKNOWN", "MESSAGE_GRAM_TRANSFER"},
+      {"MESSAGE_GRAM_TRANSFER_UNKNOWN_COMMENT", "MESSAGE_GRAM_TRANSFER"},
       {"MESSAGE_INVOICE", "MESSAGE_INVOICE"},
       {"MESSAGE_NOTEXT", "MESSAGE"},
       {"MESSAGE_NOTHEME", "MESSAGE_CHAT_CHANGE_THEME"},
@@ -2860,6 +2865,7 @@ string NotificationManager::convert_loc_key(const string &loc_key) {
       {"MESSAGE_PHOTO_SECRET", "MESSAGE_SECRET_PHOTO"},
       {"MESSAGE_PLAYLIST", "MESSAGE_AUDIOS"},
       {"MESSAGE_POLL", "MESSAGE_POLL"},
+      {"MESSAGE_POLL_APPEND", "MESSAGE_POLL_APPEND"},
       {"MESSAGE_PROXIMITY", "MESSAGE_PROXIMITY"},
       {"MESSAGE_QUIZ", "MESSAGE_QUIZ"},
       {"MESSAGE_RECURRING_PAY", "MESSAGE_RECURRING_PAYMENT"},
@@ -2884,6 +2890,8 @@ string NotificationManager::convert_loc_key(const string &loc_key) {
       {"MESSAGE_VIDEO", "MESSAGE_VIDEO"},
       {"MESSAGE_VIDEOS", "MESSAGE_VIDEOS"},
       {"MESSAGE_VIDEO_SECRET", "MESSAGE_SECRET_VIDEO"},
+      {"MESSAGE_WALLET_TONCONNECT_REQUEST", "MESSAGE_WALLET_TONCONNECT_REQUEST"},
+      {"MESSAGE_WALLET_TONCONNECT_REQUEST_DAPP", "MESSAGE_WALLET_TONCONNECT_REQUEST"},
       {"MESSAGE_WALLPAPER", "MESSAGE_WALLPAPER"},
       {"PINNED_AUDIO", "PINNED_MESSAGE_VOICE_NOTE"},
       {"PINNED_CONTACT", "PINNED_MESSAGE_CONTACT"},
@@ -2927,10 +2935,10 @@ void NotificationManager::add_push_notification_user(
   auto user_name = sender_user_id.get() == 136817688 ? "Channel" : sender_name;
   auto user = telegram_api::make_object<telegram_api::user>(
       flags, false, false, false, false, false, false, false, false, false, true /*min*/, false, false, false, false,
-      false, false, false, false, 0, false, false, false, false, false, false, false, false, false,
+      false, false, false, false, 0, false, false, false, false, false, false, false, false, false, false, false, false,
       sender_user_id.get(), sender_access_hash, user_name, string(), string(), string(), std::move(sender_photo),
       nullptr, 0, Auto(), string(), string(), nullptr, vector<telegram_api::object_ptr<telegram_api::username>>(),
-      nullptr, nullptr, nullptr, 0, 0, 0);
+      nullptr, nullptr, nullptr, 0, 0, 0, 0);
   td_->user_manager_->on_get_user(std::move(user), "add_push_notification_user");
 }
 
@@ -2989,9 +2997,10 @@ Status NotificationManager::parse_push_notification_attach(DialogId dialog_id, s
           ends_with(loc_key, "MESSAGE_VIDEO") || ends_with(loc_key, "MESSAGE_VIDEO_NOTE") ||
           ends_with(loc_key, "MESSAGE_VOICE_NOTE") || ends_with(loc_key, "MESSAGE_TEXT")) {
         VLOG(notifications) << "Have attached document";
-        attached_document = td_->documents_manager_->on_get_document(
-            telegram_api::move_object_as<telegram_api::document>(result), dialog_id, false);
-        if (!attached_document.empty()) {
+        attached_document =
+            td_->documents_manager_->on_get_document(telegram_api::move_object_as<telegram_api::document>(result),
+                                                     dialog_id, false, ends_with(loc_key, "MESSAGE_LIVE_PHOTO"));
+        if (!attached_document.is_empty()) {
           if (ends_with(loc_key, "_NOTE")) {
             loc_key.resize(loc_key.rfind('_'));
           }
@@ -3385,6 +3394,7 @@ Status NotificationManager::process_push_notification_payload(string payload, bo
     return Status::Error(406, "Story notifications are unsupported");
   }
 
+  auto original_loc_key = loc_key;
   loc_key = convert_loc_key(loc_key);
   if (loc_key.empty()) {
     return Status::Error("Push type is unknown");
@@ -3444,6 +3454,22 @@ Status NotificationManager::process_push_notification_payload(string payload, bo
     arg = PSTRING() << user_count << ' ' << StarManager::get_star_count(star_count);
     loc_args.clear();
   }
+  if (loc_key == "MESSAGE_GRAM_TRANSFER") {
+    string comment;
+    if (original_loc_key == "MESSAGE_GRAM_TRANSFER_COMMENT" ||
+        original_loc_key == "MESSAGE_GRAM_TRANSFER_UNKNOWN_COMMENT") {
+      if (loc_args.size() != 2) {
+        return Status::Error("Expected 2 arguments for MESSAGE_GRAM_TRANSFER_COMMENT");
+      }
+      comment = std::move(loc_args[1]);
+      loc_args.pop_back();
+    }
+    if (loc_args.size() != 1) {
+      return Status::Error("Expected 1 argument for MESSAGE_GRAM_TRANSFER");
+    }
+    arg = PSTRING() << loc_args[0] << '\xFF' << comment;
+    loc_args.clear();
+  }
   if (loc_key == "MESSAGE_PAID_MEDIA") {
     if (loc_args.size() != 1) {
       return Status::Error("Expected 1 argument for MESSAGE_PAID_MEDIA");
@@ -3452,6 +3478,18 @@ Status NotificationManager::process_push_notification_payload(string payload, bo
     star_count = StarManager::get_star_count(star_count);
     arg = to_string(star_count);
     loc_args.clear();
+  }
+  if (loc_key == "MESSAGE_WALLET_TONCONNECT_REQUEST") {
+    if (original_loc_key == "MESSAGE_WALLET_TONCONNECT_REQUEST_DAPP") {
+      if (loc_args.size() != 1) {
+        return Status::Error("Expected 1 argument for MESSAGE_WALLET_TONCONNECT_REQUEST_DAPP");
+      }
+      arg = std::move(loc_args[0]);
+      loc_args.pop_back();
+    }
+    if (!loc_args.empty()) {
+      return Status::Error("Expected no arguments for MESSAGE_WALLET_TONCONNECT_REQUEST");
+    }
   }
   if (loc_args.size() > 1) {
     return Status::Error("Receive too many arguments");
@@ -3573,7 +3611,7 @@ class NotificationManager::AddMessagePushNotificationLogEvent {
     bool has_sender_name = !sender_name_.empty();
     bool has_arg = !arg_.empty();
     bool has_photo = !photo_.is_empty();
-    bool has_document = !document_.empty();
+    bool has_document = !document_.is_empty();
     bool has_sender_dialog_id = sender_dialog_id_.is_valid();
     bool has_ringtone_id = !disable_notification_ && ringtone_id_ != -1;
     BEGIN_STORE_FLAGS();
@@ -3810,7 +3848,7 @@ class NotificationManager::EditMessagePushNotificationLogEvent {
     bool has_message_id = message_id_.is_valid();
     bool has_arg = !arg_.empty();
     bool has_photo = !photo_.is_empty();
-    bool has_document = !document_.empty();
+    bool has_document = !document_.is_empty();
     BEGIN_STORE_FLAGS();
     STORE_FLAG(has_message_id);
     STORE_FLAG(has_arg);
@@ -3995,7 +4033,7 @@ Result<string> NotificationManager::decrypt_push_payload(int64 encryption_key_id
   packet_info.is_creator = true;
   packet_info.check_mod4 = false;
 
-  TRY_RESULT(result, mtproto::Transport::read(payload, auth_key, &packet_info));
+  TRY_RESULT(result, mtproto::Transport::read(payload, 0, auth_key, &packet_info));
   if (result.type() != mtproto::Transport::ReadResult::Packet) {
     return Status::Error(400, "Wrong packet type");
   }

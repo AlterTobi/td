@@ -19,7 +19,6 @@
 #include "td/telegram/Global.h"
 #include "td/telegram/MessageEntity.h"
 #include "td/telegram/MessageId.h"
-#include "td/telegram/MessageQuote.h"
 #include "td/telegram/MessageSender.h"
 #include "td/telegram/MessagesManager.h"
 #include "td/telegram/OnlineManager.h"
@@ -1831,7 +1830,7 @@ class GetCraftStarGiftsQuery final : public Td::ResultHandler {
         transform(full_split(td_->option_manager_->get_option_string("stargifts_craft_attribute_permilles",
                                                                      "100,80,400,70,350,700,60,300,600,1000"),
                              ','),
-                  to_integer<int32>);
+                  [](const auto &str) { return to_integer<int32>(str); });
     CHECK(attribute_persistence_per_mille.size() == 10u);
     vector<td_api::object_ptr<td_api::attributeCraftPersistenceProbability>> probabilities;
     for (size_t num = 1; num <= 4; num++) {
@@ -1994,7 +1993,7 @@ class GetResaleStarGiftsQuery final : public Td::ResultHandler {
       : promise_(std::move(promise)) {
   }
 
-  void send(int64 gift_id, const td_api::object_ptr<td_api::GiftForResaleOrder> &order, bool for_craft,
+  void send(int64 gift_id, const td_api::object_ptr<td_api::GiftForResaleOrder> &order, bool for_craft, bool for_stars,
             const vector<StarGiftAttributeId> &attribute_ids, const string &offset, int32 limit) {
     int32 flags = 0;
     auto order_id = order->get_id();
@@ -2007,7 +2006,7 @@ class GetResaleStarGiftsQuery final : public Td::ResultHandler {
     }
     send_query(G()->net_query_creator().create(telegram_api::payments_getResaleStarGifts(
         flags, order_id == td_api::giftForResaleOrderPrice::ID, order_id == td_api::giftForResaleOrderNumber::ID,
-        for_craft, 0, gift_id, std::move(attributes), offset, limit)));
+        for_craft, for_stars, 0, gift_id, std::move(attributes), offset, limit)));
   }
 
   void on_result(BufferSlice packet) final {
@@ -2371,7 +2370,7 @@ class GetStarGiftPromoAnimationQuery final : public Td::ResultHandler {
 
       auto parsed_document =
           td_->documents_manager_->on_get_document(telegram_api::move_object_as<telegram_api::document>(video),
-                                                   DialogId(), false, nullptr, Document::Type::Animation);
+                                                   DialogId(), false, false, nullptr, Document::Type::Animation);
 
       if (parsed_document.type != Document::Type::Animation) {
         LOG(ERROR) << "Receive " << parsed_document.type << " for " << promo->video_sections_[i];
@@ -2468,7 +2467,7 @@ void StarGiftManager::send_gift(int64 gift_id, DialogId dialog_id, td_api::objec
   TRY_RESULT_PROMISE(
       promise, message,
       get_formatted_text(td_, td_->dialog_manager_->get_my_dialog_id(), std::move(text), false, true, true, false));
-  MessageQuote::remove_unallowed_quote_entities(message);
+  remove_unallowed_quote_entities(message);
 
   auto input_invoice = telegram_api::make_object<telegram_api::inputInvoiceStarGift>(
       0, is_private, pay_for_upgrade, std::move(input_peer), gift_id, nullptr);
@@ -2802,7 +2801,7 @@ void StarGiftManager::do_place_gift_auction_bid(int64 gift_id, int64 star_count,
   TRY_RESULT_PROMISE(
       promise, message,
       get_formatted_text(td_, td_->dialog_manager_->get_my_dialog_id(), std::move(text), false, true, true, false));
-  MessageQuote::remove_unallowed_quote_entities(message);
+  remove_unallowed_quote_entities(message);
 
   int32 flags = telegram_api::inputInvoiceStarGiftAuctionBid::PEER_MASK;
   auto input_invoice = telegram_api::make_object<telegram_api::inputInvoiceStarGiftAuctionBid>(
@@ -3079,6 +3078,7 @@ void StarGiftManager::drop_gift_original_details(StarGiftId star_gift_id, int64 
 }
 
 void StarGiftManager::send_resold_gift(const string &gift_name, DialogId receiver_dialog_id, StarGiftResalePrice price,
+                                       td_api::object_ptr<td_api::formattedText> text, bool is_private,
                                        Promise<td_api::object_ptr<td_api::GiftResaleResult>> &&promise) {
   auto input_peer = td_->dialog_manager_->get_input_peer(receiver_dialog_id, AccessRights::Read);
   auto resale_input_peer = td_->dialog_manager_->get_input_peer(receiver_dialog_id, AccessRights::Read);
@@ -3088,10 +3088,23 @@ void StarGiftManager::send_resold_gift(const string &gift_name, DialogId receive
   if (!td_->star_manager_->has_owned_amount(price)) {
     return promise.set_error(400, "Have not enough funds");
   }
-  auto input_invoice = telegram_api::make_object<telegram_api::inputInvoiceStarGiftResale>(0, price.is_ton(), gift_name,
-                                                                                           std::move(input_peer));
+  TRY_RESULT_PROMISE(
+      promise, message,
+      get_formatted_text(td_, td_->dialog_manager_->get_my_dialog_id(), std::move(text), false, true, true, false));
+  remove_unallowed_quote_entities(message);
+
+  auto input_invoice = telegram_api::make_object<telegram_api::inputInvoiceStarGiftResale>(
+      0, price.is_ton(), !is_private, gift_name, std::move(input_peer), nullptr);
   auto resale_input_invoice = telegram_api::make_object<telegram_api::inputInvoiceStarGiftResale>(
-      0, price.is_ton(), gift_name, std::move(resale_input_peer));
+      0, price.is_ton(), !is_private, gift_name, std::move(resale_input_peer), nullptr);
+  if (!message.text.empty()) {
+    input_invoice->flags_ |= telegram_api::inputInvoiceStarGiftResale::MESSAGE_MASK;
+    input_invoice->message_ = get_input_text_with_entities(td_->user_manager_.get(), message, "send_resold_gift");
+
+    resale_input_invoice->flags_ |= telegram_api::inputInvoiceStarGiftResale::MESSAGE_MASK;
+    resale_input_invoice->message_ =
+        get_input_text_with_entities(td_->user_manager_.get(), message, "send_resold_gift");
+  }
   StarGiftId star_gift_id;
   if (receiver_dialog_id == td_->dialog_manager_->get_my_dialog_id()) {
     star_gift_id = StarGiftId::from_slug(gift_name);
@@ -3209,7 +3222,7 @@ void StarGiftManager::set_star_gift_price(StarGiftId star_gift_id, StarGiftResal
 }
 
 void StarGiftManager::get_resale_star_gifts(
-    int64 gift_id, const td_api::object_ptr<td_api::GiftForResaleOrder> &order, bool for_craft,
+    int64 gift_id, const td_api::object_ptr<td_api::GiftForResaleOrder> &order, bool for_craft, bool for_stars,
     const vector<td_api::object_ptr<td_api::UpgradedGiftAttributeId>> &attributes, const string &offset, int32 limit,
     Promise<td_api::object_ptr<td_api::giftsForResale>> &&promise) {
   if (limit < 0) {
@@ -3221,7 +3234,7 @@ void StarGiftManager::get_resale_star_gifts(
   TRY_RESULT_PROMISE(promise, attribute_ids, StarGiftAttributeId::get_star_gift_attribute_ids(attributes));
 
   td_->create_handler<GetResaleStarGiftsQuery>(std::move(promise))
-      ->send(gift_id, order, for_craft, attribute_ids, offset, limit);
+      ->send(gift_id, order, for_craft, for_stars, attribute_ids, offset, limit);
 }
 
 void StarGiftManager::get_gift_collections(DialogId dialog_id,
@@ -3435,11 +3448,8 @@ void StarGiftManager::on_reload_gift_auction_timeout(int64 gift_id) {
     return;
   }
   CHECK(!td_->auth_manager_->is_bot());
-  int32 version = 0;
   auto it = gift_auction_infos_.find(gift_id);
-  if (it != gift_auction_infos_.end()) {
-    version = it->second.state_.get_version();
-  }
+  auto version = it != gift_auction_infos_.end() ? it->second.state_.get_version() : static_cast<int32>(0);
   reload_gift_auction_state(telegram_api::make_object<telegram_api::inputStarGiftAuction>(gift_id), version, Auto());
 }
 
